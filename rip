@@ -1,0 +1,227 @@
+#!/bin/bash
+# Automatically rip a DVD to a high quality x264 mp4 file, named appropriately
+# TODO: Add music cd support as well
+# TODO: Handle series DVD/Blu-ray
+# TODO: Handle arbitrary file
+# TODO: Scrap dry run and replace with a preview mode?
+# TODO: Bash only dvdid?
+# TODO: Find way to seek the stream with mplayer, for ffmpeg cropdetect and preview.
+set -uf -o pipefail
+
+failure() {
+	echo "${1}"
+	exit 1
+}
+
+# Preview the same quality, but as fast as possible
+enc_dryr="-c:v libx264 -preset ultrafast -crf 18 -c:a aac -movflags frag_keyframe+empty_moov -f mp4"
+enc_real="-c:v libx264 -preset slow -crf 18 -c:a aac -movflags +faststart"
+
+# Usage info
+show_help() {
+	cat << EOF
+Usage: ${0##*/} [-h] [-i INPUT] [-t TITLE] [-c CROP] [-n NAME] [-e ENC] [-d]
+Rip DVD/Blu-ray to a high quality x264/aac mp4 file.
+
+    -h         Display this help and exit.
+    -i INPUT   Defaults to /dev/sr0.
+    -t TITLE   Do not try to autodetermine the title, use the supplied title number.
+    -c CROP    Do not try to autodetermine the crop parameters, use the supplied parameters.
+    -n NAME    Do not try to autodetermine the filename, use the supplied file name.
+               The default tries to find the title and release year e.g. "Citizen Kane (1941).mp4"
+    -e ENC     Override default video encoding options. Defaults differ slightly between dry run and real modes:
+               Dry:  ${enc_dryr}
+               Real: ${enc_real}
+               Tweaking preset and tune options is recommended, see https://trac.ffmpeg.org/wiki/Encode/H.264
+    -d         Do a dry run. Print out the autodetermined title, filename, and start playing rather than saving the file.
+
+${0##*/} primarily makes use of mplayer and ffmpeg. If mplayer cannot play your DVD or Blu-Ray, then ${0##*/} cannot function.
+For details on the software necessary to play DVD or Blu-Ray discs (you will need several libraries), see:
+https://wiki.archlinux.org/index.php/Blu-ray
+https://wiki.archlinux.org/index.php?title=Optical_disc_drive&redirect=no#DVD
+
+EOF
+}
+
+dry_run=false
+title=""
+name=""
+input="/dev/sr0"
+crop_parameters=""
+
+OPTIND=1
+while getopts "hi:t:c:n:e:d" opt; do
+	case "${opt}" in
+		h)
+			show_help
+			exit 0
+			;;
+		i)
+			input=${OPTARG}
+			;;
+		t)
+			title=${OPTARG}
+			;;
+		c)
+			crop_parameters=${OPTARG}
+			;;
+		n)
+			name=${OPTARG}
+			;;
+		d)
+			dry_run=true
+			;;
+		e)
+			enc_options=${OPTARG}
+			;;
+		'?')
+			show_help >&2
+			exit 1
+			;;
+	esac
+done
+shift "$((OPTIND-1))" # Shift off the options and optional --.
+
+# midentify is a shell script that comes with the mplayer source, but doesn't always get packaged
+_midentify() { mplayer -vo null -ao null -frames 0 -identify "$@" 2>/dev/null | sed -ne '/^ID_/ { s/[]()|&;<>`'"'"'\\!$" []/\\&/g;p}'; }
+
+# The behavior of cropdetect is strange, it seems seeking into the middle of the video requires some time to 'settle' otherwise bad values occur.
+# And those bad values need to be ignored by using a low reset count (1). If 0 is used, it holds onto the bad values produced in the first ~20 frames.
+# So the 50 frames here is a pretty arbitrary number helping to deal with an apparent crappiness in cropdetect. It allows the video to 'settle', and we take the last value.
+cropdetect() {
+	mplayer "${media_type}://${title}/${optical_mnt}" -noautosub -ss "${1}" -quiet -vf cropdetect=24:16:1 -vo null -ao null -frames 50 2> /dev/null | grep -o "crop=[0-9]*:[0-9]*:[0-9]*:[0-9]*" | tail -1
+}
+
+cleanup() {
+	umount -f "${tmp_mnt}"
+	rmdir "${tmp_mnt}"
+}
+
+# Check requirements
+failed_requirements=false
+require() {
+	command -v "${1}" >/dev/null 2>&1 || { echo "${1} is required but not found." >&2; failed_requirements=true; }
+}
+# TODO: Check for libcss etc.?
+require mplayer
+require ffmpeg
+require dvdid
+require curl
+require xmlstarlet
+require omdbtool
+if [ "${failed_requirements}" = true ] ; then
+	exit 1
+fi
+
+# Mount
+tmp_mnt=$(mktemp -d)
+optical_mnt=${tmp_mnt}
+mount "${input}" "${optical_mnt}" > /dev/null 2>&1 || failure "Error encountered during mount."
+trap cleanup EXIT
+
+# DVD/Blu-Ray determination
+media_type="dvd"
+media_id="DVD"
+if [ -d "${optical_mnt}/BDMV" ]; then
+	media_type="br"
+	media_id="BLURAY"
+fi
+
+# egrep line from http://wiki.bash-hackers.org/howto/conffile
+# We only want to eval NAME=VAL strings as an extra bit of security, though nothing evil could likely be done anyway unless we mistrust mplayer.
+eval "$(_midentify "${media_type}:///${optical_mnt}" -noautosub | egrep '^#|^[^ ]*=[^;&]*')"
+
+titles_str="ID_${media_id}_TITLES"
+if [ -z "${!titles_str}" ]; then
+	failure "Failure parsing DVD information."
+fi
+
+if [ -z "${title}" ]; then
+	echo "Autodetermining main title..."
+	# Find the longest title
+	title=0
+	longest_length=0
+	counter=${!titles_str}
+	while [ ${counter} -ge 1 ]; do
+		title_length="ID_${media_id}_TITLE_${counter}_LENGTH"
+	#	if [ ! -z ${!title_length} ] && [ "$(bc <<< "${!title_length}>${longest_length}")" -eq 1 ]; then
+		integer_length=$(printf "%.0f" ${!title_length})
+		if [ ! -z ${!title_length} ] && [ "${integer_length}" -gt "${longest_length}" ]; then
+			longest_length=${integer_length}
+			title=${counter}
+		fi
+		let counter=counter-1
+	done
+fi
+
+if [ -z "${crop_parameters}" ]; then
+	echo "Autodetermining crop parameters..."
+	# Detect crop parameters
+	# Sample at 7 points in the middle of the movie, divided into 1/8s.
+	# /  |  |  |  |  |  |  |  /
+	P_1=$(cropdetect "$(bc -l <<< "scale=3; (${longest_length}/8)*1")")
+	P_2=$(cropdetect "$(bc -l <<< "scale=3; (${longest_length}/8)*2")")
+	P_3=$(cropdetect "$(bc -l <<< "scale=3; (${longest_length}/8)*3")")
+	P_4=$(cropdetect "$(bc -l <<< "scale=3; (${longest_length}/8)*4")")
+	P_5=$(cropdetect "$(bc -l <<< "scale=3; (${longest_length}/8)*5")")
+	P_6=$(cropdetect "$(bc -l <<< "scale=3; (${longest_length}/8)*6")")
+	P_7=$(cropdetect "$(bc -l <<< "scale=3; (${longest_length}/8)*7")")
+	# Get the most repeated line
+	crop_parameters=$(echo -e "${P_1}\n${P_2}\n${P_3}\n${P_4}\n${P_5}\n${P_6}\n${P_7}\n" | uniq -dc | sort | tail -1 | grep -o "crop=[0-9]*:[0-9]*:[0-9]*:[0-9]*")
+	if [ -z "${crop_parameters}" ]; then
+		failure "Crop detection failure."
+	fi
+fi
+
+if [ -z "${name}" ]; then
+	echo "Autodetermining filename..."
+	if [ "${media_type}" == "br" ]; then
+		# http://stackoverflow.com/questions/7633542/how-to-read-title-and-id-from-blu-ray-disc
+		# Try BDMV/META/DL/bdmt_eng.xml
+		# Another option here is to use AACS/mcmf.xml contentId, which should be transformable to an ISAN by some magic
+		# But I don't know the magic, the ISAN lookup is kind of crap (unless you are "registered") and it seems unreliable to even be there anyway.
+		# TODO: Is another form of the Windows Media Player Lookup possible here?
+		if [ ! -f "${optical_mnt}/BDMV/META/DL/bdmt_eng.xml" ]; then
+			failure "Could not find meta information for disc. Cannot determine a name."
+		fi
+		movie_title=$(sed -e 's/ xmlns.*=".*"//g' < "${optical_mnt}/BDMV/META/DL/bdmt_eng.xml" | sed -e 's/di://g' | xmlstarlet sel -t -m "disclib/discinfo/title/name" -v "." | cut -d "-" -f 1)
+		release_year=$(omdbtool -t "Castle in the Sky" | sed -n '/^year/{n;p;}')
+	else
+		# Lookup movie_title using dvdid and Windows media player lookup: 
+		# http://www.ragingcomputer.com/2015/03/lookup-dvd-metatata-from-disc
+		# http://dvdid.cjkey.org.uk/
+		dvd_id=$(dvdid "${optical_mnt}")
+		dvd_id=${dvd_id//|}
+		dvd_info=$(curl "http://metaservices.windowsmedia.com/pas_dvd_B/template/GetMDRDVDByCRC.xml?CRC=${dvd_id}" 2> /dev/null)
+		movie_title=$(xmlstarlet sel -t -m "METADATA/MDR-DVD/title/titleTitle" -v "." - <<< "${dvd_info}" | sed 's/\[[^]]*\]//g')
+		release_year=$(xmlstarlet sel -t -m "METADATA/MDR-DVD/releaseDate" -v "." - <<< "${dvd_info}" | cut -d ' ' -f 1)
+	fi
+	shopt -s extglob
+	# Trim leading whitespace
+	movie_title="${movie_title##*( )}"
+	# Trim trailing whitespace
+	movie_title="${movie_title%%*( )}"
+	shopt -u extglob
+	name="${movie_title} (${release_year}).mp4"
+fi
+
+# https://trac.ffmpeg.org/wiki/Encode/H.264
+if [ "${dry_run}" = true ] ; then
+	if [ -z "${enc_options}" ]; then
+		enc_options=${enc_dryr}
+	fi
+	echo -e "${0##*/} -i ${input} -t ${title} -c ${crop_parameters} -n \"${name}\" -e \"${enc_options}\" -d"
+	
+	# TODO: Perhaps use "sob" tool or similiar, would like to buffer output to ffplay: http://www.secnetix.de/olli/software/sob/
+	mplayer "${media_type}://${title}/${optical_mnt}" -noautosub -alang en -really-quiet -dumpstream -dumpfile /dev/stdout 2> /dev/null | \
+	ffmpeg -hide_banner -loglevel quiet -i - -filter:v "${crop_parameters}" ${enc_options} pipe:1 | \
+	ffplay -hide_banner -loglevel quiet -i - || failure "Failure in playback or encoding."
+else
+	if [ -z "${enc_options}" ]; then
+		enc_options=${enc_real}
+	fi
+	echo -e "${0##*/} -i ${input} -t ${title} -c ${crop_parameters} -n \"${name}\" -e \"${enc_options}\" -d"
+
+	mplayer "${media_type}://${title}/${optical_mnt}" -noautosub -alang en -really-quiet -dumpstream -dumpfile /dev/stdout 2> /dev/null | \
+	ffmpeg -hide_banner -i - -filter:v "${crop_parameters}" ${enc_options} "${name}" || failure "Failure in playback or encoding."
+fi
