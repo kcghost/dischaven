@@ -6,6 +6,8 @@
 # TODO: Scrap dry run and replace with a preview mode?
 # TODO: Bash only dvdid?
 # TODO: Find way to seek the stream with mplayer, for ffmpeg cropdetect and preview.
+# TODO: Autodetect tune? Is quality constant with tune?
+# TODO: Archival mode? Rip all titles to volume id directory?
 set -uf -o pipefail
 
 failure() {
@@ -14,8 +16,7 @@ failure() {
 }
 
 # Preview the same quality, but as fast as possible
-enc_dryr="-c:v libx264 -preset ultrafast -crf 18 -c:a aac -movflags frag_keyframe+empty_moov -f mp4"
-enc_real="-c:v libx264 -preset slow -crf 18 -c:a aac -movflags +faststart"
+enc_options="-c:v libx264 -preset veryslow -crf 18 -c:a aac -movflags +faststart"
 
 # Usage info
 show_help() {
@@ -28,12 +29,11 @@ Rip DVD/Blu-ray to a high quality x264/aac mp4 file.
     -t TITLE   Do not try to autodetermine the title, use the supplied title number.
     -c CROP    Do not try to autodetermine the crop parameters, use the supplied parameters.
     -n NAME    Do not try to autodetermine the filename, use the supplied file name.
-               The default tries to find the title and release year e.g. "Citizen Kane (1941).mp4"
-    -e ENC     Override default video encoding options. Defaults differ slightly between dry run and real modes:
-               Dry:  ${enc_dryr}
-               Real: ${enc_real}
+               The default tries to find the title and release year e.g. "Citizen Kane (1941)"
+    -e ENC     Override default encoding options. Default options:
+               Real: ${enc_options}
                Tweaking preset and tune options is recommended, see https://trac.ffmpeg.org/wiki/Encode/H.264
-    -d         Do a dry run. Print out the autodetermined title, filename, and start playing rather than saving the file.
+    -p         Create a 10 second preview named NAME_preview.mp4, starting at halfway through the film.
 
 ${0##*/} primarily makes use of mplayer and ffmpeg. If mplayer cannot play your DVD or Blu-Ray, then ${0##*/} cannot function.
 For details on the software necessary to play DVD or Blu-Ray discs (you will need several libraries), see:
@@ -43,14 +43,14 @@ https://wiki.archlinux.org/index.php?title=Optical_disc_drive&redirect=no#DVD
 EOF
 }
 
-dry_run=false
+preview=false
 title=""
 name=""
 input="/dev/sr0"
 crop_parameters=""
 
 OPTIND=1
-while getopts "hi:t:c:n:e:d" opt; do
+while getopts "hi:t:c:n:e:p" opt; do
 	case "${opt}" in
 		h)
 			show_help
@@ -68,11 +68,11 @@ while getopts "hi:t:c:n:e:d" opt; do
 		n)
 			name=${OPTARG}
 			;;
-		d)
-			dry_run=true
-			;;
 		e)
 			enc_options=${OPTARG}
+			;;
+		p)
+			preview=true
 			;;
 		'?')
 			show_help >&2
@@ -109,6 +109,7 @@ require dvdid
 require curl
 require xmlstarlet
 require omdbtool
+require sponge
 if [ "${failed_requirements}" = true ] ; then
 	exit 1
 fi
@@ -129,7 +130,10 @@ fi
 
 # egrep line from http://wiki.bash-hackers.org/howto/conffile
 # We only want to eval NAME=VAL strings as an extra bit of security, though nothing evil could likely be done anyway unless we mistrust mplayer.
-eval "$(_midentify "${media_type}:///${optical_mnt}" -noautosub | egrep '^#|^[^ ]*=[^;&]*')"
+# Keep id_results around since oddly mplayer will output multiple ID_AUDIO_ID. The first one will be the one specified by alang, the one we want.
+id_results="$(_midentify "${media_type}:///${optical_mnt}" -alang en | grep -E '^#|^[^ ]*=[^;&]*')"
+eval "${id_results}"
+eval "$(grep -m 1 ID_AUDIO_ID <<< "${id_results}")"
 
 titles_str="ID_${media_id}_TITLES"
 if [ -z "${!titles_str}" ]; then
@@ -153,6 +157,8 @@ if [ -z "${title}" ]; then
 		let counter=counter-1
 	done
 fi
+title_length="ID_${media_id}_TITLE_${title}_LENGTH"
+longest_length="${!title_length}"
 
 if [ -z "${crop_parameters}" ]; then
 	echo "Autodetermining crop parameters..."
@@ -202,26 +208,36 @@ if [ -z "${name}" ]; then
 	# Trim trailing whitespace
 	movie_title="${movie_title%%*( )}"
 	shopt -u extglob
-	name="${movie_title} (${release_year}).mp4"
+	name="${movie_title} (${release_year})"
 fi
 
+# TODO: Select correct VIDEO/AUDIO tracks.
 # https://trac.ffmpeg.org/wiki/Encode/H.264
-if [ "${dry_run}" = true ] ; then
-	if [ -z "${enc_options}" ]; then
-		enc_options=${enc_dryr}
-	fi
-	echo -e "${0##*/} -i ${input} -t ${title} -c ${crop_parameters} -n \"${name}\" -e \"${enc_options}\" -d"
+if [ "${preview}" = true ] ; then
+	echo -e "${0##*/} -i ${input} -t ${title} -c ${crop_parameters} -n \"${name}\" -e \"${enc_options}\" -p"
+	echo "Starting encoding..."
+	half="$(bc -l <<< "scale=3; ${longest_length}/2")"
+	# -endpos for mplayer doesn't work, not sure why, mplayer is just kind of terrible
+	# -frames works though, so we can calculate by FPS to find 10 seconds of frames
+	frames="$(bc -l <<< "scale=3; ${ID_VIDEO_FPS}*10")"
+	frames="$(printf %0.f ${frames})"
 	
-	# TODO: Perhaps use "sob" tool or similiar, would like to buffer output to ffplay: http://www.secnetix.de/olli/software/sob/
-	mplayer "${media_type}://${title}/${optical_mnt}" -noautosub -alang en -really-quiet -dumpstream -dumpfile /dev/stdout 2> /dev/null | \
-	ffmpeg -hide_banner -loglevel quiet -i - -filter:v "${crop_parameters}" ${enc_options} pipe:1 | \
-	ffplay -hide_banner -loglevel quiet -i - || failure "Failure in playback or encoding."
+	# For mplayer, use 'capture' rather than dumpstream in order to seek to an arbitrary point.
+	# -y: Allow ffmpeg to overwite a file in this mode, but not in real mode.
+	# -hide_banner -loglevel quiet -progress /dev/stdout: With some unbuffered filtering in sed and tr, can *just* output a running progress rather than all the crap ffmpeg loves to spit out.
+	# 'sponge' grabs all input *before* sending it out. This is to ensure consistency, for some reason mplayer is not super strict about length and will actually
+	# output more frames when the output is processed slowly e.g. preset veryslow. Using sponge prevents that problem (though it seems either way there are some more frames than there should be)
+	echo "capturing" | mplayer -slave -ss "${half}" -frames "${frames}" "${media_type}://${title}/${optical_mnt}" -really-quiet -vo null -ao null -capture -dumpfile /dev/stdout 2> /dev/null | \
+	sponge | \
+	ffmpeg -y -hide_banner -loglevel quiet -progress /dev/stdout -i - -filter:v "${crop_parameters}" ${enc_options} "${name}_preview.mp4" | \
+	stdbuf -i0 -o0 -e0 sed 's/frame=/\'$'\rframe=/g' | stdbuf -i0 -o0 -e0 tr '\n' ' ' || failure "Failure in playback or encoding."
 else
-	if [ -z "${enc_options}" ]; then
-		enc_options=${enc_real}
-	fi
-	echo -e "${0##*/} -i ${input} -t ${title} -c ${crop_parameters} -n \"${name}\" -e \"${enc_options}\" -d"
+	echo -e "${0##*/} -i ${input} -t ${title} -c ${crop_parameters} -n \"${name}\" -e \"${enc_options}\""
+	echo "Starting encoding..."
 
-	mplayer "${media_type}://${title}/${optical_mnt}" -noautosub -alang en -really-quiet -dumpstream -dumpfile /dev/stdout 2> /dev/null | \
-	ffmpeg -hide_banner -i - -filter:v "${crop_parameters}" ${enc_options} "${name}" || failure "Failure in playback or encoding."
+	mplayer "${media_type}://${title}/${optical_mnt}" -really-quiet -dumpstream -dumpfile /dev/stdout 2> /dev/null | \
+	ffmpeg -hide_banner -loglevel quiet -progress /dev/stdout -i - -filter:v "${crop_parameters}" ${enc_options} "${name}.mp4" | \
+	stdbuf -i0 -o0 -e0 sed 's/frame=/\'$'\rframe=/g' | stdbuf -i0 -o0 -e0 tr '\n' ' ' || failure "Failure in playback or encoding."
 fi
+
+echo -e "\nFinished!\n"
