@@ -3,9 +3,7 @@
 # TODO: Add music cd support as well
 # TODO: Handle series DVD/Blu-ray
 # TODO: Handle arbitrary file
-# TODO: Scrap dry run and replace with a preview mode?
 # TODO: Bash only dvdid?
-# TODO: Find way to seek the stream with mplayer, for ffmpeg cropdetect and preview.
 # TODO: Autodetect tune? Is quality constant with tune?
 # TODO: Archival mode? Rip all titles to volume id directory?
 set -uf -o pipefail
@@ -31,7 +29,7 @@ Rip DVD/Blu-ray to a high quality x264/aac mp4 file.
     -n NAME    Do not try to autodetermine the filename, use the supplied file name.
                The default tries to find the title and release year e.g. "Citizen Kane (1941)"
     -e ENC     Override default encoding options. Default options:
-               Real: ${enc_options}
+               ${enc_options}
                Tweaking preset and tune options is recommended, see https://trac.ffmpeg.org/wiki/Encode/H.264
     -p         Create a 10 second preview named NAME_preview.mp4, starting at halfway through the film.
 
@@ -85,11 +83,12 @@ shift "$((OPTIND-1))" # Shift off the options and optional --.
 # midentify is a shell script that comes with the mplayer source, but doesn't always get packaged
 _midentify() { mplayer -vo null -ao null -frames 0 -identify "$@" 2>/dev/null | sed -ne '/^ID_/ { s/[]()|&;<>`'"'"'\\!$" []/\\&/g;p}'; }
 
-# The behavior of cropdetect is strange, it seems seeking into the middle of the video requires some time to 'settle' otherwise bad values occur.
-# And those bad values need to be ignored by using a low reset count (1). If 0 is used, it holds onto the bad values produced in the first ~20 frames.
-# So the 50 frames here is a pretty arbitrary number helping to deal with an apparent crappiness in cropdetect. It allows the video to 'settle', and we take the last value.
 cropdetect() {
-	mplayer "${media_type}://${title}/${optical_mnt}" -noautosub -ss "${1}" -quiet -vf cropdetect=24:16:1 -vo null -ao null -frames 50 2> /dev/null | grep -o "crop=[0-9]*:[0-9]*:[0-9]*:[0-9]*" | tail -1
+	echo "capturing" | \
+	mplayer "${media_type}://${title}/${optical_mnt}" -ss "${1}" -really-quiet -vo null -ao null -capture -dumpfile /dev/stdout 2> /dev/null | \
+	ffmpeg -i - -vframes 2 -vf cropdetect -f null - 2>&1 | \
+	grep -o "crop=[0-9]*:[0-9]*:[0-9]*:[0-9]*" | \
+	tail -1
 }
 
 cleanup() {
