@@ -125,17 +125,19 @@ if [ -d "${optical_mnt}/BDMV" ]; then
 	media_id="BLURAY"
 fi
 
+# Use midentify to grab information
 # egrep line from http://wiki.bash-hackers.org/howto/conffile
 # We only want to eval NAME=VAL strings as an extra bit of security, though nothing evil could likely be done anyway unless we mistrust mplayer.
 # Keep id_results around since oddly mplayer will output multiple ID_AUDIO_ID. The first one will be the one specified by alang, the one we want.
 id_results="$(_midentify "${media_type}:///${optical_mnt}" -alang en | grep -E '^#|^[^ ]*=[^;&]*')"
 eval "${id_results}"
 eval "$(grep -m 1 ID_AUDIO_ID <<< "${id_results}")"
-
 titles_str="ID_${media_id}_TITLES"
 if [ -z "${!titles_str}" ]; then
-	failure "Failure parsing DVD information."
+	failure "Failure parsing media information."
 fi
+vid_track="$(printf 0x%x ${ID_VIDEO_ID})"
+aud_track="$(printf 0x%x ${ID_AUDIO_ID})"
 
 if [ -z "${title}" ]; then
 	echo "Autodetermining main title..."
@@ -207,9 +209,6 @@ if [ -z "${name}" ]; then
 	shopt -u extglob
 	name="${movie_title} (${release_year})"
 fi
-
-vid_track="$(printf 0x%x ${ID_VIDEO_ID})"
-aud_track="$(printf 0x%x ${ID_AUDIO_ID})"
 
 if [ "${preview}" = true ] ; then
 	echo -e "${0##*/} -i ${input} -t ${title} -c ${crop_parameters} -n \"${name}\" -e \"${enc_options}\" -p"
