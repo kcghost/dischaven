@@ -101,14 +101,12 @@ failed_requirements=false
 require() {
 	command -v "${1}" >/dev/null 2>&1 || { echo "${1} is required but not found." >&2; failed_requirements=true; }
 }
-# TODO: Check for libcss etc.?
 require mplayer
 require ffmpeg
 require dvdid
 require curl
 require xmlstarlet
 require omdbtool
-require sponge
 if [ "${failed_requirements}" = true ] ; then
 	exit 1
 fi
@@ -210,11 +208,12 @@ if [ -z "${name}" ]; then
 	name="${movie_title} (${release_year})"
 fi
 
-# TODO: Select correct VIDEO/AUDIO tracks.
-# https://trac.ffmpeg.org/wiki/Encode/H.264
+vid_track="$(printf 0x%x ${ID_VIDEO_ID})"
+aud_track="$(printf 0x%x ${ID_AUDIO_ID})"
+
 if [ "${preview}" = true ] ; then
 	echo -e "${0##*/} -i ${input} -t ${title} -c ${crop_parameters} -n \"${name}\" -e \"${enc_options}\" -p"
-	echo "Starting encoding..."
+	echo "Encoding preview..."
 	half="$(bc -l <<< "scale=3; ${longest_length}/2")"
 	# -endpos for mplayer doesn't work, not sure why, mplayer is just kind of terrible
 	# -frames works though, so we can calculate by FPS to find 10 seconds of frames
@@ -226,16 +225,16 @@ if [ "${preview}" = true ] ; then
 	# -hide_banner -loglevel quiet -progress /dev/stdout: With some unbuffered filtering in sed and tr, can *just* output a running progress rather than all the crap ffmpeg loves to spit out.
 	# 'sponge' grabs all input *before* sending it out. This is to ensure consistency, for some reason mplayer is not super strict about length and will actually
 	# output more frames when the output is processed slowly e.g. preset veryslow. Using sponge prevents that problem (though it seems either way there are some more frames than there should be)
-	echo "capturing" | mplayer -slave -ss "${half}" -frames "${frames}" "${media_type}://${title}/${optical_mnt}" -really-quiet -vo null -ao null -capture -dumpfile /dev/stdout 2> /dev/null | \
-	sponge | \
-	ffmpeg -y -hide_banner -loglevel quiet -progress /dev/stdout -i - -filter:v "${crop_parameters}" ${enc_options} "${name}_preview.mp4" | \
+	echo "capturing" | \
+	mplayer -slave -ss "${half}" "${media_type}://${title}/${optical_mnt}" -really-quiet -vo null -ao null -capture -dumpfile /dev/stdout 2> /dev/null | \
+	ffmpeg -y -hide_banner -loglevel quiet -progress /dev/stdout -i - -vframes "${frames}" -map "i:${vid_track}" -map "i:${aud_track}"  -filter:v "${crop_parameters}" ${enc_options} "${name}_preview.mp4" | \
 	stdbuf -i0 -o0 -e0 sed 's/frame=/\'$'\rframe=/g' | stdbuf -i0 -o0 -e0 tr '\n' ' ' || failure "Failure in playback or encoding."
 else
 	echo -e "${0##*/} -i ${input} -t ${title} -c ${crop_parameters} -n \"${name}\" -e \"${enc_options}\""
-	echo "Starting encoding..."
+	echo "Encoding film..."
 
 	mplayer "${media_type}://${title}/${optical_mnt}" -really-quiet -dumpstream -dumpfile /dev/stdout 2> /dev/null | \
-	ffmpeg -hide_banner -loglevel quiet -progress /dev/stdout -i - -filter:v "${crop_parameters}" ${enc_options} "${name}.mp4" | \
+	ffmpeg -hide_banner -loglevel quiet -progress /dev/stdout -i - -map "i:${vid_track}" -map "i:${aud_track}" -filter:v "${crop_parameters}" ${enc_options} "${name}.mp4" | \
 	stdbuf -i0 -o0 -e0 sed 's/frame=/\'$'\rframe=/g' | stdbuf -i0 -o0 -e0 tr '\n' ' ' || failure "Failure in playback or encoding."
 fi
 
