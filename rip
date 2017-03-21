@@ -188,7 +188,8 @@ if [ -z "${name}" ]; then
 		if [ ! -f "${optical_mnt}/BDMV/META/DL/bdmt_eng.xml" ]; then
 			failure "Could not find meta information for disc. Cannot determine a name."
 		fi
-		movie_title=$(sed -e 's/ xmlns.*=".*"//g' < "${optical_mnt}/BDMV/META/DL/bdmt_eng.xml" | \
+		movie_title=$(xml ed -N N="http://www.c.com/xyz" -d '//N:*' ${optical_mnt}/BDMV/META/DL/bdmt_eng.xml \
+			| sed -e 's/ xmlns.*=".*"//g' | \
 			sed -e 's/di://g' | \
 			xmlstarlet sel -t -m "disclib/discinfo/title/name" -v "." | \
 			cut -d "-" -f 1\
