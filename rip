@@ -83,6 +83,22 @@ shift "$((OPTIND-1))" # Shift off the options and optional --.
 # midentify is a shell script that comes with the mplayer source, but doesn't always get packaged
 _midentify() { mplayer -vo null -ao null -frames 0 -identify "$@" 2>/dev/null | sed -ne '/^ID_/ { s/[]()|&;<>`'"'"'\\!$" []/\\&/g;p}'; }
 
+grab_info() {
+	# Use midentify to grab information
+	# egrep line from http://wiki.bash-hackers.org/howto/conffile
+	# We only want to eval NAME=VAL strings as an extra bit of security, though nothing evil could likely be done anyway unless we mistrust mplayer.
+	# Keep id_results around since oddly mplayer will output multiple ID_AUDIO_ID. The first one will be the one specified by alang, the one we want.
+	id_results="$(_midentify "${media_type}://${title}/${optical_mnt}" -alang en | grep -E '^#|^[^ ]*=[^;&]*')"
+	eval "${id_results}"
+	eval "$(grep -m 1 ID_AUDIO_ID <<< "${id_results}")"
+	titles_str="ID_${media_id}_TITLES"
+	if [ -z "${!titles_str}" ]; then
+		failure "Failure parsing media information."
+	fi
+	vid_track="$(printf 0x%x ${ID_VIDEO_ID})"
+	aud_track="$(printf 0x%x ${ID_AUDIO_ID})"
+}
+
 cropdetect() {
 	echo "capturing" | \
 	mplayer "${media_type}://${title}/${optical_mnt}" -ss "${1}" -really-quiet -vo null -ao null -capture -dumpfile /dev/stdout 2> /dev/null | \
@@ -124,19 +140,8 @@ if [ -d "${optical_mnt}/BDMV" ]; then
 	media_id="BLURAY"
 fi
 
-# Use midentify to grab information
-# egrep line from http://wiki.bash-hackers.org/howto/conffile
-# We only want to eval NAME=VAL strings as an extra bit of security, though nothing evil could likely be done anyway unless we mistrust mplayer.
-# Keep id_results around since oddly mplayer will output multiple ID_AUDIO_ID. The first one will be the one specified by alang, the one we want.
-id_results="$(_midentify "${media_type}:///${optical_mnt}" -alang en | grep -E '^#|^[^ ]*=[^;&]*')"
-eval "${id_results}"
-eval "$(grep -m 1 ID_AUDIO_ID <<< "${id_results}")"
-titles_str="ID_${media_id}_TITLES"
-if [ -z "${!titles_str}" ]; then
-	failure "Failure parsing media information."
-fi
-vid_track="$(printf 0x%x ${ID_VIDEO_ID})"
-aud_track="$(printf 0x%x ${ID_AUDIO_ID})"
+# Get titles information
+grab_info
 
 if [ -z "${title}" ]; then
 	echo "Autodetermining main title..."
@@ -157,6 +162,9 @@ if [ -z "${title}" ]; then
 fi
 title_length="ID_${media_id}_TITLE_${title}_LENGTH"
 longest_length="${!title_length}"
+
+# Redo to make sure we have the correct track information (with proper title)
+grab_info
 
 if [ -z "${crop_parameters}" ]; then
 	echo "Autodetermining crop parameters..."
