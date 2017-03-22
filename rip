@@ -9,7 +9,7 @@
 set -uf -o pipefail
 
 failure() {
-	echo "${1}"
+	echo -e "${1}"
 	exit 1
 }
 
@@ -37,6 +37,8 @@ ${0##*/} primarily makes use of mplayer and ffmpeg. If mplayer cannot play your 
 For details on the software necessary to play DVD or Blu-Ray discs (you will need several libraries), see:
 https://wiki.archlinux.org/index.php/Blu-ray
 https://wiki.archlinux.org/index.php?title=Optical_disc_drive&redirect=no#DVD
+You might also want to try MakeMKVs replacement for libaacs:
+http://askubuntu.com/a/579156
 
 EOF
 }
@@ -235,19 +237,28 @@ if [ "${preview}" = true ] ; then
 	# For mplayer, use 'capture' rather than dumpstream in order to seek to an arbitrary point.
 	# -y: Allow ffmpeg to overwite a file in this mode, but not in real mode.
 	# -hide_banner -loglevel quiet -progress /dev/stdout: With some unbuffered filtering in sed and tr, can *just* output a running progress rather than all the crap ffmpeg loves to spit out.
-	# 'sponge' grabs all input *before* sending it out. This is to ensure consistency, for some reason mplayer is not super strict about length and will actually
-	# output more frames when the output is processed slowly e.g. preset veryslow. Using sponge prevents that problem (though it seems either way there are some more frames than there should be)
+	# vid_track/aud_track. Filter with one ffmpeg instance for matching ids, but there might be duplicates with the same id. Pass to another instance to only get one of each stream (best quality)
+
 	echo "capturing" | \
-	mplayer -slave -ss "${half}" "${media_type}://${title}/${optical_mnt}" -really-quiet -vo null -ao null -capture -dumpfile /dev/stdout 2> /dev/null | \
-	ffmpeg -y -hide_banner -loglevel quiet -progress /dev/stdout -i - -vframes "${frames}" -map "i:${vid_track}" -map "i:${aud_track}"  -filter:v "${crop_parameters}" ${enc_options} "${name}_preview.mp4" | \
-	stdbuf -i0 -o0 -e0 sed 's/frame=/\'$'\rframe=/g' | stdbuf -i0 -o0 -e0 tr '\n' ' ' || failure "Failure in playback or encoding."
+	mplayer -slave -ss "${half}" "${media_type}://${title}/${optical_mnt}" -really-quiet -vo null -ao null -capture -dumpfile /dev/stdout  2> /dev/null | \
+	ffmpeg -y -hide_banner -loglevel quiet -i - -map "i:${vid_track}" -map "i:${aud_track}" -c:v copy -c:a copy -f mpegts pipe:1 | \
+	ffmpeg -y -hide_banner -loglevel quiet -progress /dev/stdout -i - -vframes "${frames}" -filter:v "${crop_parameters}" ${enc_options} "${name}_preview.mp4" | \
+	stdbuf -i0 -o0 -e0 sed 's/frame=/\'$'\rframe=/g' | stdbuf -i0 -o0 -e0 tr '\n' ' '
+
+	# Since mplayer is terribly inconsistent about length, just cut using -vframes on ffmpeg
+	# This means mplayer will quit due to a broken pipe, so we need to look out and accept that error (pipefail is enabled)
+	# Seems that mplayer gives out '141' in that case (128 + 13(SIGPIPE))
+	if [ $? -ne 141 ]; then
+		failure "\nFailure in playback or encoding."
+	fi
 else
 	echo -e "${0##*/} -i ${input} -t ${title} -c ${crop_parameters} -n \"${name}\" -e \"${enc_options}\""
 	echo "Encoding film..."
 
 	mplayer "${media_type}://${title}/${optical_mnt}" -really-quiet -dumpstream -dumpfile /dev/stdout 2> /dev/null | \
-	ffmpeg -hide_banner -loglevel quiet -progress /dev/stdout -i - -map "i:${vid_track}" -map "i:${aud_track}" -filter:v "${crop_parameters}" ${enc_options} "${name}.mp4" | \
-	stdbuf -i0 -o0 -e0 sed 's/frame=/\'$'\rframe=/g' | stdbuf -i0 -o0 -e0 tr '\n' ' ' || failure "Failure in playback or encoding."
+	ffmpeg -y -hide_banner -loglevel quiet -i - -map "i:${vid_track}" -map "i:${aud_track}" -c:v copy -c:a copy -f mpegts pipe:1 | \
+	ffmpeg -hide_banner -loglevel quiet -progress /dev/stdout -i - -filter:v "${crop_parameters}" ${enc_options} "${name}.mp4" | \
+	stdbuf -i0 -o0 -e0 sed 's/frame=/\'$'\rframe=/g' | stdbuf -i0 -o0 -e0 tr '\n' ' ' || failure "\nFailure in playback or encoding."
 fi
 
 echo -e "\nFinished!\n"
