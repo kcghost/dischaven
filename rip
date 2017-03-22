@@ -97,8 +97,8 @@ grab_info() {
 	if [ -z "${!titles_str}" ]; then
 		failure "Failure parsing media information."
 	fi
-	vid_track="$(printf 0x%x ${ID_VIDEO_ID})"
-	aud_track="$(printf 0x%x ${ID_AUDIO_ID})"
+	vid_track="$(printf 0x%x "${ID_VIDEO_ID}")"
+	aud_track="$(printf 0x%x "${ID_AUDIO_ID}")"
 }
 
 cropdetect() {
@@ -151,11 +151,11 @@ if [ -z "${title}" ]; then
 	title=0
 	longest_length=0
 	counter=${!titles_str}
-	while [ ${counter} -ge 1 ]; do
+	while [ "${counter}" -ge 1 ]; do
 		title_length="ID_${media_id}_TITLE_${counter}_LENGTH"
 	#	if [ ! -z ${!title_length} ] && [ "$(bc <<< "${!title_length}>${longest_length}")" -eq 1 ]; then
-		integer_length=$(printf "%.0f" ${!title_length})
-		if [ ! -z ${!title_length} ] && [ "${integer_length}" -gt "${longest_length}" ]; then
+		integer_length=$(printf "%.0f" "${!title_length}")
+		if [ ! -z "${!title_length}" ] && [ "${integer_length}" -gt "${longest_length}" ]; then
 			longest_length=${integer_length}
 			title=${counter}
 		fi
@@ -198,7 +198,7 @@ if [ -z "${name}" ]; then
 		if [ ! -f "${optical_mnt}/BDMV/META/DL/bdmt_eng.xml" ]; then
 			failure "Could not find meta information for disc. Cannot determine a name."
 		fi
-		movie_title=$(xml ed -N N="http://www.c.com/xyz" -d '//N:*' ${optical_mnt}/BDMV/META/DL/bdmt_eng.xml \
+		movie_title=$(xml ed -N N="http://www.c.com/xyz" -d '//N:*' "${optical_mnt}/BDMV/META/DL/bdmt_eng.xml" \
 			| sed -e 's/ xmlns.*=".*"//g' | \
 			sed -e 's/di://g' | \
 			xmlstarlet sel -t -m "disclib/discinfo/title/name" -v "." | \
@@ -232,7 +232,7 @@ if [ "${preview}" = true ] ; then
 	# -endpos for mplayer doesn't work, not sure why, mplayer is just kind of terrible
 	# -frames works though, so we can calculate by FPS to find 10 seconds of frames
 	frames="$(bc -l <<< "scale=3; ${ID_VIDEO_FPS}*10")"
-	frames="$(printf %0.f ${frames})"
+	frames="$(printf %0.f "${frames}")"
 	
 	# For mplayer, use 'capture' rather than dumpstream in order to seek to an arbitrary point.
 	# -y: Allow ffmpeg to overwite a file in this mode, but not in real mode.
@@ -261,4 +261,4 @@ else
 	stdbuf -i0 -o0 -e0 sed 's/frame=/\'$'\rframe=/g' | stdbuf -i0 -o0 -e0 tr '\n' ' ' || failure "\nFailure in playback or encoding."
 fi
 
-echo -e "\nFinished!\n"
+echo -e "\nFinished!"
