@@ -117,11 +117,11 @@ cleanup() {
 # Check requirements
 failed_requirements=false
 require() {
-	command -v "${1}" >/dev/null 2>&1 || { echo "${1} is required but not found." >&2; failed_requirements=true; }
+	command -v "${1}" >/dev/null 2>&1 || { echo "${1} is required but not found. ${2-}"; failed_requirements=true; }
 }
 require mplayer
 require ffmpeg
-require dvdid
+require dvdid "Can be found at http://dvdid.cjkey.org.uk/"
 require curl
 require xmlstarlet
 if [ "${failed_requirements}" = true ] ; then
