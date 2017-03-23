@@ -99,6 +99,12 @@ grab_info() {
 	fi
 	vid_track="$(printf 0x%x "${ID_VIDEO_ID}")"
 	aud_track="$(printf 0x%x "${ID_AUDIO_ID}")"
+
+	# in case of invalid video id, seems to happen with DVDs?
+	vid_map="i:${vid_track}"
+	if [ "${vid_track}" == "0x0" ]; then
+		vid_map="0:v"
+	fi
 }
 
 cropdetect() {
@@ -262,7 +268,7 @@ if [ "${preview}" = true ] ; then
 	# -frames works though, so we can calculate by FPS to find 10 seconds of frames
 	frames="$(bc -l <<< "scale=3; ${ID_VIDEO_FPS}*10")"
 	frames="$(printf %0.f "${frames}")"
-	
+
 	# For mplayer, use 'capture' rather than dumpstream in order to seek to an arbitrary point.
 	# -y: Allow ffmpeg to overwite a file in this mode, but not in real mode.
 	# -hide_banner -loglevel quiet -progress /dev/stdout: With some unbuffered filtering in sed and tr, can *just* output a running progress rather than all the crap ffmpeg loves to spit out.
@@ -270,7 +276,7 @@ if [ "${preview}" = true ] ; then
 
 	echo "capturing" | \
 	mplayer -slave -ss "${half}" "${media_type}://${title}/${optical_mnt}" -really-quiet -vo null -ao null -capture -dumpfile /dev/stdout  2> /dev/null | \
-	ffmpeg -y -hide_banner -loglevel quiet -i - -map "i:${vid_track}" -map "i:${aud_track}" -c:v copy -c:a copy -f mpegts pipe:1 | \
+	ffmpeg -y -hide_banner -loglevel quiet -i - -map "${vid_map}" -map "i:${aud_track}" -c:v copy -c:a copy -f mpegts pipe:1 | \
 	ffmpeg -y -hide_banner -loglevel quiet -progress /dev/stdout -i - -vframes "${frames}" -filter:v "${crop_parameters}" ${enc_options} "${name}_preview.mp4" | \
 	stdbuf -i0 -o0 -e0 sed 's/frame=/\'$'\rframe=/g' | stdbuf -i0 -o0 -e0 tr '\n' ' '
 
@@ -285,7 +291,7 @@ else
 	echo "Encoding film..."
 
 	mplayer "${media_type}://${title}/${optical_mnt}" -really-quiet -dumpstream -dumpfile /dev/stdout 2> /dev/null | \
-	ffmpeg -y -hide_banner -loglevel quiet -i - -map "i:${vid_track}" -map "i:${aud_track}" -c:v copy -c:a copy -f mpegts pipe:1 | \
+	ffmpeg -y -hide_banner -loglevel quiet -i - -map "${vid_map}" -map "i:${aud_track}" -c:v copy -c:a copy -f mpegts pipe:1 | \
 	ffmpeg -hide_banner -loglevel quiet -progress /dev/stdout -i - -filter:v "${crop_parameters}" ${enc_options} "${name}.mp4" | \
 	stdbuf -i0 -o0 -e0 sed 's/frame=/\'$'\rframe=/g' | stdbuf -i0 -o0 -e0 tr '\n' ' ' || failure "\nFailure in playback or encoding."
 fi
