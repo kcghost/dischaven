@@ -57,15 +57,17 @@ MKDIR_P ?= mkdir -p
 
 # TODO: Install completions?
 
-all: rip
+.PHONY: all lint print-% install uninstall
+
+all: dischaven
 
 print-%: ; @echo $*=$($*)
 
-test:
-	shellcheck rip
+lint:
+	shellcheck dischaven
 
 install:
-	$(INSTALL_PROGRAM) rip $(DESTDIR)$(bindir)/rip
+	$(INSTALL_PROGRAM) dischaven $(DESTDIR)$(bindir)/dischaven
 
 uninstall:
-	-rm -f $(DESTDIR)$(bindir)/rip
+	-rm -f $(DESTDIR)$(bindir)/dischaven
