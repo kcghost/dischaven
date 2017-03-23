@@ -6,6 +6,7 @@
 # TODO: Bash only dvdid?
 # TODO: Autodetect tune? Is quality constant with tune?
 # TODO: Archival mode? Rip all titles to volume id directory?
+# TODO: OMDB donation?
 set -uf -o pipefail
 
 failure() {
@@ -13,7 +14,6 @@ failure() {
 	exit 1
 }
 
-# Preview the same quality, but as fast as possible
 enc_options="-c:v libx264 -preset veryslow -crf 18 -c:a aac -movflags +faststart"
 
 # Usage info
@@ -109,6 +109,55 @@ cropdetect() {
 	tail -1
 }
 
+# http://stackoverflow.com/questions/369758/how-to-trim-whitespace-from-a-bash-variable
+trim() {
+	local var="$*"
+	# remove leading whitespace characters
+	var="${var#"${var%%[![:space:]]*}"}"
+	# remove trailing whitespace characters
+	var="${var%"${var##*[![:space:]]}"}"
+	echo -n "$var"
+}
+
+lookup() {
+	echo "Performing lookup..."
+	if [ "${media_type}" == "br" ]; then
+		# http://stackoverflow.com/questions/7633542/how-to-read-title-and-id-from-blu-ray-disc
+		# Try BDMV/META/DL/bdmt_eng.xml
+		# Another option here is to use AACS/mcmf.xml contentId, which should be transformable to an ISAN by some magic
+		# But I don't know the magic, the ISAN lookup is kind of crap (unless you are "registered") and it seems unreliable to even be there anyway.
+		# TODO: Is another form of the Windows Media Player Lookup possible here?
+		if [ ! -f "${optical_mnt}/BDMV/META/DL/bdmt_eng.xml" ]; then
+			failure "Could not find meta information for disc. Cannot determine a name."
+		fi
+		movie_title=$(xml ed -N N="http://www.c.com/xyz" -d '//N:*' "${optical_mnt}/BDMV/META/DL/bdmt_eng.xml" \
+			| sed -e 's/ xmlns.*=".*"//g' | \
+			sed -e 's/di://g' | \
+			xmlstarlet sel -t -m "disclib/discinfo/title/name" -v "." | \
+			cut -d "-" -f 1\
+		) || failure "Disc meta information failure"
+		movie_title=$(trim "${movie_title}")
+		omdb_lookup=$(curl "http://www.omdbapi.com/?t=${movie_title// /%20}&r=xml" 2> /dev/null) || failure "OMDB lookup failure"
+		release_year=$(xmlstarlet sel -t -m "//root/movie" -v @year - <<< "${omdb_lookup}") || failure "OMDB lookup failure"
+		runtime_length=$(xmlstarlet sel -t -m "//root/movie" -v @runtime - <<< "${omdb_lookup}" | cut -d " " -f 1) || failure "OMDB lookup failure"
+		runtime_length="$((60 * runtime_length))"
+
+	else
+		# Lookup movie_title using dvdid and Windows media player lookup: 
+		# http://www.ragingcomputer.com/2015/03/lookup-dvd-metatata-from-disc
+		# http://dvdid.cjkey.org.uk/
+		dvd_id=$(dvdid "${optical_mnt}")
+		dvd_id=${dvd_id//|}
+		dvd_info=$(curl "http://metaservices.windowsmedia.com/pas_dvd_B/template/GetMDRDVDByCRC.xml?CRC=${dvd_id}" 2> /dev/null)
+		movie_title=$(xmlstarlet sel -t -m "METADATA/MDR-DVD/title/titleTitle" -v "." - <<< "${dvd_info}" | sed 's/\[[^]]*\]//g')
+		release_year=$(xmlstarlet sel -t -m "METADATA/MDR-DVD/releaseDate" -v "." - <<< "${dvd_info}" | cut -d ' ' -f 1)
+		movie_title=$(trim "${movie_title}")
+		omdb_lookup=$(curl "http://www.omdbapi.com/?t=${movie_title// /%20}&y=${release_year}&r=xml" 2> /dev/null) || failure "OMDB lookup failure"
+		runtime_length=$(xmlstarlet sel -t -m "//root/movie" -v @runtime - <<< "${omdb_lookup}" | cut -d " " -f 1) || failure "OMDB lookup failure"
+		runtime_length="$((60 * runtime_length))"
+	fi
+}
+
 cleanup() {
 	umount -f "${tmp_mnt}"
 	rmdir "${tmp_mnt}"
@@ -147,23 +196,34 @@ grab_info
 
 if [ -z "${title}" ]; then
 	echo "Autodetermining main title..."
-	# Find the longest title
+	if [ -z "${runtime_length+x}" ]; then
+		lookup
+	fi
+
+	# Find the title that most closely matches the lookup runtime
 	title=0
-	longest_length=0
+	closest_title_length=3600000
 	counter=${!titles_str}
 	while [ "${counter}" -ge 1 ]; do
 		title_length="ID_${media_id}_TITLE_${counter}_LENGTH"
-	#	if [ ! -z ${!title_length} ] && [ "$(bc <<< "${!title_length}>${longest_length}")" -eq 1 ]; then
-		integer_length=$(printf "%.0f" "${!title_length}")
-		if [ ! -z "${!title_length}" ] && [ "${integer_length}" -gt "${longest_length}" ]; then
-			longest_length=${integer_length}
+		# The comment /*fi*/ is literally just there to satisfy the syntax highlighting in my editor.
+		# It sees the 'if', thinks it's bash and wants to mess up the rest of the script.
+		r=$(bc << EOF
+scale=3
+define abs(x) {if (x<0) {return -x}; return x;}
+abs(${!title_length}-${runtime_length})<abs(${closest_title_length}-${runtime_length})
+/*fi*/
+EOF
+)
+		if [ "${r}" -eq 1 ]; then
+			closest_title_length="${!title_length}"
 			title=${counter}
 		fi
 		let counter=counter-1
 	done
 fi
 title_length="ID_${media_id}_TITLE_${title}_LENGTH"
-longest_length="${!title_length}"
+title_length="${!title_length}"
 
 # Redo to make sure we have the correct track information (with proper title)
 grab_info
@@ -173,13 +233,13 @@ if [ -z "${crop_parameters}" ]; then
 	# Detect crop parameters
 	# Sample at 7 points in the middle of the movie, divided into 1/8s.
 	# /  |  |  |  |  |  |  |  /
-	P_1=$(cropdetect "$(bc -l <<< "scale=3; (${longest_length}/8)*1")")
-	P_2=$(cropdetect "$(bc -l <<< "scale=3; (${longest_length}/8)*2")")
-	P_3=$(cropdetect "$(bc -l <<< "scale=3; (${longest_length}/8)*3")")
-	P_4=$(cropdetect "$(bc -l <<< "scale=3; (${longest_length}/8)*4")")
-	P_5=$(cropdetect "$(bc -l <<< "scale=3; (${longest_length}/8)*5")")
-	P_6=$(cropdetect "$(bc -l <<< "scale=3; (${longest_length}/8)*6")")
-	P_7=$(cropdetect "$(bc -l <<< "scale=3; (${longest_length}/8)*7")")
+	P_1=$(cropdetect "$(bc -l <<< "scale=3; (${title_length}/8)*1")")
+	P_2=$(cropdetect "$(bc -l <<< "scale=3; (${title_length}/8)*2")")
+	P_3=$(cropdetect "$(bc -l <<< "scale=3; (${title_length}/8)*3")")
+	P_4=$(cropdetect "$(bc -l <<< "scale=3; (${title_length}/8)*4")")
+	P_5=$(cropdetect "$(bc -l <<< "scale=3; (${title_length}/8)*5")")
+	P_6=$(cropdetect "$(bc -l <<< "scale=3; (${title_length}/8)*6")")
+	P_7=$(cropdetect "$(bc -l <<< "scale=3; (${title_length}/8)*7")")
 	# Get the most repeated line
 	crop_parameters=$(echo -e "${P_1}\n${P_2}\n${P_3}\n${P_4}\n${P_5}\n${P_6}\n${P_7}\n" | uniq -dc | sort | tail -1 | grep -o "crop=[0-9]*:[0-9]*:[0-9]*:[0-9]*")
 	if [ -z "${crop_parameters}" ]; then
@@ -188,47 +248,16 @@ if [ -z "${crop_parameters}" ]; then
 fi
 
 if [ -z "${name}" ]; then
-	echo "Autodetermining filename..."
-	if [ "${media_type}" == "br" ]; then
-		# http://stackoverflow.com/questions/7633542/how-to-read-title-and-id-from-blu-ray-disc
-		# Try BDMV/META/DL/bdmt_eng.xml
-		# Another option here is to use AACS/mcmf.xml contentId, which should be transformable to an ISAN by some magic
-		# But I don't know the magic, the ISAN lookup is kind of crap (unless you are "registered") and it seems unreliable to even be there anyway.
-		# TODO: Is another form of the Windows Media Player Lookup possible here?
-		if [ ! -f "${optical_mnt}/BDMV/META/DL/bdmt_eng.xml" ]; then
-			failure "Could not find meta information for disc. Cannot determine a name."
-		fi
-		movie_title=$(xml ed -N N="http://www.c.com/xyz" -d '//N:*' "${optical_mnt}/BDMV/META/DL/bdmt_eng.xml" \
-			| sed -e 's/ xmlns.*=".*"//g' | \
-			sed -e 's/di://g' | \
-			xmlstarlet sel -t -m "disclib/discinfo/title/name" -v "." | \
-			cut -d "-" -f 1\
-		) || failure "Disc meta information failure"
-		omdb_lookup=$(curl "http://www.omdbapi.com/?t=${movie_title// /%20}&r=xml" 2> /dev/null) || failure "OMDB lookup failure"
-		release_year=$(xmlstarlet sel -t -m "//root/movie" -v @year - <<< "${omdb_lookup}") || failure "OMDB lookup failure"
-	else
-		# Lookup movie_title using dvdid and Windows media player lookup: 
-		# http://www.ragingcomputer.com/2015/03/lookup-dvd-metatata-from-disc
-		# http://dvdid.cjkey.org.uk/
-		dvd_id=$(dvdid "${optical_mnt}")
-		dvd_id=${dvd_id//|}
-		dvd_info=$(curl "http://metaservices.windowsmedia.com/pas_dvd_B/template/GetMDRDVDByCRC.xml?CRC=${dvd_id}" 2> /dev/null)
-		movie_title=$(xmlstarlet sel -t -m "METADATA/MDR-DVD/title/titleTitle" -v "." - <<< "${dvd_info}" | sed 's/\[[^]]*\]//g')
-		release_year=$(xmlstarlet sel -t -m "METADATA/MDR-DVD/releaseDate" -v "." - <<< "${dvd_info}" | cut -d ' ' -f 1)
+	if [ -z "${movie_title+x}" ]; then
+		lookup
 	fi
-	shopt -s extglob
-	# Trim leading whitespace
-	movie_title="${movie_title##*( )}"
-	# Trim trailing whitespace
-	movie_title="${movie_title%%*( )}"
-	shopt -u extglob
 	name="${movie_title} (${release_year})"
 fi
 
 if [ "${preview}" = true ] ; then
 	echo -e "${0##*/} -i ${input} -t ${title} -c ${crop_parameters} -n \"${name}\" -e \"${enc_options}\" -p"
 	echo "Encoding preview..."
-	half="$(bc -l <<< "scale=3; ${longest_length}/2")"
+	half="$(bc -l <<< "scale=3; ${title_length}/2")"
 	# -endpos for mplayer doesn't work, not sure why, mplayer is just kind of terrible
 	# -frames works though, so we can calculate by FPS to find 10 seconds of frames
 	frames="$(bc -l <<< "scale=3; ${ID_VIDEO_FPS}*10")"
