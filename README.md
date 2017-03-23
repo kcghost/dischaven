@@ -23,7 +23,7 @@ Normally you would use 'dischaven -p', which autodetects the rest of the options
 Since the autodetection process takes some time, the command will also give out the full command and options necessary to skip the autodetection e.g. `dischaven -i /dev/sr0 -t 59 -c crop=1920:1024:0:28 -n "Castle in the Sky (1986).mp4" -e "-c:v libx264 -preset veryslow -crf 18 -c:a aac -movflags +faststart"`.
 These options may be customized for better size or quality (such as -tune options) or to work around failures in the autodetection.
 
-The default behavior attempts to automatically find the main title of the disc, the best quality english audio track, and rip it to a high quality very portable h264/aac mp4 named in the style of "Name (ReleaseYear).mp4".
+The default behavior attempts to automatically find the main title of the disc, the best quality english audio track, crop it and rip it to a high quality very portable h264/aac mp4 named in the style of "Name (ReleaseYear).mp4".
 
 Bugs
 ----
