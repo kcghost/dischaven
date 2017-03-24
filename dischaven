@@ -6,7 +6,6 @@
 # TODO: Bash only dvdid?
 # TODO: Autodetect tune? Is quality constant with tune?
 # TODO: Archival mode? Rip all titles to volume id directory?
-# TODO: OMDB donation?
 set -uf -o pipefail
 
 failure() {
@@ -126,7 +125,7 @@ trim() {
 }
 
 lookup() {
-	echo "Performing lookup..."
+	printf "Performing lookup..."
 	if [ "${media_type}" == "br" ]; then
 		# http://stackoverflow.com/questions/7633542/how-to-read-title-and-id-from-blu-ray-disc
 		# Try BDMV/META/DL/bdmt_eng.xml
@@ -143,25 +142,28 @@ lookup() {
 			cut -d "-" -f 1\
 		) || failure "Disc meta information failure"
 		movie_title=$(trim "${movie_title}")
+		# TODO: Do a "search" request to find possible duplicate titles?
+		printf "OMDB..."
 		omdb_lookup=$(curl "http://www.omdbapi.com/?t=${movie_title// /%20}&r=xml" 2> /dev/null) || failure "OMDB lookup failure"
 		release_year=$(xmlstarlet sel -t -m "//root/movie" -v @year - <<< "${omdb_lookup}") || failure "OMDB lookup failure"
-		runtime_length=$(xmlstarlet sel -t -m "//root/movie" -v @runtime - <<< "${omdb_lookup}" | cut -d " " -f 1) || failure "OMDB lookup failure"
-		runtime_length="$((60 * runtime_length))"
-
 	else
 		# Lookup movie_title using dvdid and Windows media player lookup: 
 		# http://www.ragingcomputer.com/2015/03/lookup-dvd-metatata-from-disc
 		# http://dvdid.cjkey.org.uk/
 		dvd_id=$(dvdid "${optical_mnt}")
 		dvd_id=${dvd_id//|}
-		dvd_info=$(curl "http://metaservices.windowsmedia.com/pas_dvd_B/template/GetMDRDVDByCRC.xml?CRC=${dvd_id}" 2> /dev/null)
-		movie_title=$(xmlstarlet sel -t -m "METADATA/MDR-DVD/title/titleTitle" -v "." - <<< "${dvd_info}" | sed 's/\[[^]]*\]//g')
-		release_year=$(xmlstarlet sel -t -m "METADATA/MDR-DVD/releaseDate" -v "." - <<< "${dvd_info}" | cut -d ' ' -f 1)
+		printf "WMP..."
+		dvd_info=$(curl "http://metaservices.windowsmedia.com/pas_dvd_B/template/GetMDRDVDByCRC.xml?CRC=${dvd_id}" 2> /dev/null) || failure "WMP lookup failure"
+		movie_title=$(xmlstarlet sel -t -m "METADATA/MDR-DVD/title/titleTitle" -v "." - <<< "${dvd_info}" | sed 's/\[[^]]*\]//g') || failure "WMP lookup failure"
+		release_year=$(xmlstarlet sel -t -m "METADATA/MDR-DVD/releaseDate" -v "." - <<< "${dvd_info}" | cut -d ' ' -f 1) || failure "WMP lookup failure"
 		movie_title=$(trim "${movie_title}")
+		# Can't quite avoid the OMDB lookup as we still need the runtime, but at least it has the luxury of ensuring a correct year in case of duplicate titles
+		printf "OMDB..."
 		omdb_lookup=$(curl "http://www.omdbapi.com/?t=${movie_title// /%20}&y=${release_year}&r=xml" 2> /dev/null) || failure "OMDB lookup failure"
-		runtime_length=$(xmlstarlet sel -t -m "//root/movie" -v @runtime - <<< "${omdb_lookup}" | cut -d " " -f 1) || failure "OMDB lookup failure"
-		runtime_length="$((60 * runtime_length))"
 	fi
+	printf "\n"
+	runtime_length=$(xmlstarlet sel -t -m "//root/movie" -v @runtime - <<< "${omdb_lookup}" | cut -d " " -f 1) || failure "OMDB lookup failure"
+	runtime_length="$((60 * runtime_length))"
 }
 
 cleanup() {
@@ -201,10 +203,10 @@ fi
 grab_info
 
 if [ -z "${title}" ]; then
-	echo "Autodetermining main title..."
 	if [ -z "${runtime_length+x}" ]; then
 		lookup
 	fi
+	echo "Autodetermining main title..."
 
 	# Find the title that most closely matches the lookup runtime
 	title=0

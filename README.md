@@ -27,7 +27,21 @@ The default behavior attempts to automatically find the main title of the disc, 
 
 Bugs
 ----
-Autodetection of feature title, crop, and title of the film may not always work. The standards regarding such metadata on both blu-ray and dvd are quite deficient, so the script must resort to using lookups, careful guessing, and detection features that are not wholly guaranteed.
+Autodetection of feature title, crop, and title of the film may not always work. The standards regarding such metadata on both blu-ray and dvd are quite deficient, so the script must resort to using lookups, careful guessing, and detection features that are not wholly guaranteed. There will likely always be room for improvement.
+
+TODO
+----
+I would like to possibly extend the script to support TV series DVDs/Blurays, and maybe music discs and arbitrary video files just to make it an all-in-one tool.
+
+Requirements
+------------
+* mplayer
+* ffmpeg
+* [dvdid](http://dvdid.cjkey.org.uk/)
+* curl
+* xmlstarlet
+
+The script is also relying on the [OMDb API](http://www.omdbapi.com/). If you use the tool a lot (and hence make a lot of API requests), I suggest becoming a patron or donating.
 
 License
 -------
