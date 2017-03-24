@@ -107,6 +107,7 @@ grab_info() {
 }
 
 cropdetect() {
+	# TODO: Faster cropdetect with more samples. I think I could get away with a single call to mplayer for all samples.
 	echo "capturing" | \
 	mplayer "${media_type}://${title}/${optical_mnt}" -ss "${1}" -really-quiet -vo null -ao null -capture -dumpfile /dev/stdout 2> /dev/null | \
 	ffmpeg -i - -vframes 2 -vf cropdetect -f null - 2>&1 | \
@@ -266,8 +267,8 @@ if [ "${preview}" = true ] ; then
 	echo -e "${0##*/} -i ${input} -t ${title} -c ${crop_parameters} -n \"${name}\" -e \"${enc_options}\" -p"
 	echo "Encoding preview..."
 	half="$(bc -l <<< "scale=3; ${title_length}/2")"
-	# -endpos for mplayer doesn't work, not sure why, mplayer is just kind of terrible
-	# -frames works though, so we can calculate by FPS to find 10 seconds of frames
+	# -endpos for mplayer doesn't work, not sure why, mplayer is just kind of terrible.
+	# -frames works kinda-sorta (depends on how quickly the output is consumed, ugh). Use -vframes on ffmpeg for a very consistent result.
 	frames="$(bc -l <<< "scale=3; ${ID_VIDEO_FPS}*10")"
 	frames="$(printf %0.f "${frames}")"
 
