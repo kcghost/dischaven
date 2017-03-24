@@ -211,7 +211,7 @@ if [ -z "${title}" ]; then
 
 	# Find the title that most closely matches the lookup runtime
 	title=0
-	closest_title_length=3600000
+	closest_title_length=0
 	counter=${!titles_str}
 	while [ "${counter}" -ge 1 ]; do
 		title_length="ID_${media_id}_TITLE_${counter}_LENGTH"
